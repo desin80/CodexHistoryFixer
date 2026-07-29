@@ -20,7 +20,7 @@ internal static class TuiApplication
                 (!AnsiConsole.Profile.Capabilities.Interactive || Console.IsInputRedirected))
             {
                 AnsiConsole.MarkupLine(
-                    "[yellow]无参数模式需要真实交互终端。自动化运行请使用 --dry-run 或 --yes。[/]");
+                    "[yellow]无参数模式需要真实交互终端。自动化运行请使用 --yes。[/]");
                 return 2;
             }
 
@@ -102,12 +102,6 @@ internal static class TuiApplication
         var service = new MigrationService();
         var analysis = AnalyzeWithStatus(service, options.CodexHome, options.Provider);
         PrintAnalysis(analysis);
-
-        if (options.DryRun)
-        {
-            AnsiConsole.MarkupLine("\n[green]预演完成，未修改任何文件。[/]");
-            return 0;
-        }
 
         if (!HasPendingChanges(analysis))
         {
@@ -312,9 +306,6 @@ internal static class TuiApplication
                 case "-h":
                     options.ShowHelp = true;
                     break;
-                case "--dry-run":
-                    options.DryRun = true;
-                    break;
                 case "--yes":
                 case "-y":
                     options.AssumeYes = true;
@@ -352,7 +343,6 @@ internal static class TuiApplication
             .AddColumn("参数")
             .AddColumn("说明")
             .AddRow("无参数", "启动交互式 TUI")
-            .AddRow("--dry-run", "只扫描，不修改")
             .AddRow("--yes, -y", "跳过迁移确认")
             .AddRow("--provider <name>", "覆盖 config.toml 中的 Provider")
             .AddRow("--codex-home <path>", "指定 Codex 数据目录")
@@ -364,7 +354,6 @@ internal static class TuiApplication
     {
         public string CodexHome { get; set; } = string.Empty;
         public string? Provider { get; set; }
-        public bool DryRun { get; set; }
         public bool AssumeYes { get; set; }
         public bool ShowHelp { get; set; }
     }

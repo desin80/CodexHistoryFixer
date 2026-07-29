@@ -1,3 +1,5 @@
+using System.Text.Json.Serialization;
+
 namespace CodexHistoryFixer;
 
 internal sealed record MigrationAnalysis(
@@ -23,3 +25,22 @@ internal sealed record MigrationProgress(
     int Current,
     int Total,
     string Message);
+
+internal sealed record MigrationManifest(
+    DateTimeOffset MigratedAt,
+    string CodexHome,
+    string TargetProvider,
+    int SessionFilesFound,
+    int SessionFilesChanged,
+    int SessionFilesWithoutMeta,
+    string[] JsonlFilesSkippedInUse,
+    int SqliteRowsChanged,
+    Dictionary<string, int> PreviousProviderCounts);
+
+[JsonSourceGenerationOptions(
+    WriteIndented = true,
+    PropertyNamingPolicy = JsonKnownNamingPolicy.SnakeCaseLower)]
+[JsonSerializable(typeof(MigrationManifest))]
+internal sealed partial class MigrationJsonContext : JsonSerializerContext
+{
+}

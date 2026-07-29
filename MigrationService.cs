@@ -8,14 +8,11 @@ namespace CodexHistoryFixer;
 
 internal sealed partial class MigrationService
 {
+    private const string DefaultProvider = "openai";
+
     private static readonly JsonSerializerOptions CompactJsonOptions = new()
     {
         WriteIndented = false
-    };
-
-    private static readonly JsonSerializerOptions ManifestJsonOptions = new()
-    {
-        WriteIndented = true
     };
 
     public static string GetDefaultCodexHome()
@@ -185,14 +182,13 @@ internal sealed partial class MigrationService
     {
         if (!File.Exists(configPath))
         {
-            throw new FileNotFoundException("没有找到 Codex config.toml。", configPath);
+            return DefaultProvider;
         }
 
         var match = ModelProviderRegex().Match(File.ReadAllText(configPath));
         if (!match.Success)
         {
-            throw new InvalidOperationException(
-                $"{configPath} 中没有顶层 model_provider。可使用 --provider 显式指定。");
+            return DefaultProvider;
         }
 
         return ValidateProvider(match.Groups["value"].Value);
@@ -556,25 +552,24 @@ internal sealed partial class MigrationService
         int sqliteRowsChanged,
         IReadOnlyCollection<string> skippedJsonlFiles)
     {
-        var manifest = new
-        {
-            migrated_at = DateTimeOffset.Now,
-            codex_home = analysis.CodexHome,
-            target_provider = analysis.TargetProvider,
-            session_files_found = analysis.SessionFiles.Count,
-            session_files_changed = sessionFilesChanged,
-            session_files_without_meta = sessionFilesWithoutMetadata,
-            jsonl_files_skipped_in_use = skippedJsonlFiles
+        var manifest = new MigrationManifest(
+            DateTimeOffset.Now,
+            analysis.CodexHome,
+            analysis.TargetProvider,
+            analysis.SessionFiles.Count,
+            sessionFilesChanged,
+            sessionFilesWithoutMetadata,
+            skippedJsonlFiles
                 .Select(path => Path.GetRelativePath(analysis.CodexHome, path))
-                .OrderBy(path => path, StringComparer.OrdinalIgnoreCase),
-            sqlite_rows_changed = sqliteRowsChanged,
-            previous_provider_counts = analysis.ProviderCounts
-        };
+                .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
+                .ToArray(),
+            sqliteRowsChanged,
+            analysis.ProviderCounts.ToDictionary());
 
         var manifestPath = Path.Combine(backupDirectory, "migration-manifest.json");
         File.WriteAllText(
             manifestPath,
-            JsonSerializer.Serialize(manifest, ManifestJsonOptions),
+            JsonSerializer.Serialize(manifest, MigrationJsonContext.Default.MigrationManifest),
             new UTF8Encoding(false));
     }
 
