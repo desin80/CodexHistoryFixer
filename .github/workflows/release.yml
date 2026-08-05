@@ -1,0 +1,92 @@
+name: Build cross-platform release
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: ${{ matrix.rid }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - rid: win-x64
+            os: windows-latest
+            archive: zip
+          - rid: win-arm64
+            os: windows-latest
+            archive: zip
+          - rid: linux-x64
+            os: ubuntu-latest
+            archive: tar
+          - rid: linux-arm64
+            os: ubuntu-latest
+            archive: tar
+          - rid: osx-x64
+            os: macos-latest
+            archive: tar
+          - rid: osx-arm64
+            os: macos-latest
+            archive: tar
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Publish
+        shell: pwsh
+        run: >-
+          dotnet publish CodexHistoryFixer.csproj
+          --configuration Release
+          --runtime ${{ matrix.rid }}
+          --output publish/${{ matrix.rid }}
+          --nologo
+
+      - name: Create Windows archive
+        if: matrix.archive == 'zip'
+        shell: pwsh
+        run: Compress-Archive -Path "publish/${{ matrix.rid }}/*" -DestinationPath "CodexHistoryFixer-${{ matrix.rid }}.zip"
+
+      - name: Create Unix archive
+        if: matrix.archive == 'tar'
+        shell: pwsh
+        run: |
+          chmod +x "publish/${{ matrix.rid }}/CodexHistoryFixer"
+          tar -C "publish/${{ matrix.rid }}" -czf "CodexHistoryFixer-${{ matrix.rid }}.tar.gz" .
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: CodexHistoryFixer-${{ matrix.rid }}
+          path: CodexHistoryFixer-${{ matrix.rid }}.*
+          if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*
+          generate_release_notes: true
