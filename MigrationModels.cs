@@ -5,6 +5,7 @@ namespace CodexHistoryFixer;
 internal sealed record MigrationAnalysis(
     string CodexHome,
     string TargetProvider,
+    string? TargetModel,
     IReadOnlyList<string> SessionFiles,
     IReadOnlyList<string> LockedSessionFiles,
     IReadOnlyList<string> StateDatabases,
@@ -30,6 +31,7 @@ internal sealed record MigrationManifest(
     DateTimeOffset MigratedAt,
     string CodexHome,
     string TargetProvider,
+    string? TargetModel,
     int SessionFilesFound,
     int SessionFilesChanged,
     int SessionFilesWithoutMeta,

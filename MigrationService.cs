@@ -30,9 +30,11 @@ internal sealed partial class MigrationService
             throw new DirectoryNotFoundException($"Codex 数据目录不存在：{resolvedHome}");
         }
 
+        var configPath = Path.Combine(resolvedHome, "config.toml");
         var targetProvider = string.IsNullOrWhiteSpace(providerOverride)
-            ? ReadConfiguredProvider(Path.Combine(resolvedHome, "config.toml"))
+            ? ReadConfiguredProvider(configPath)
             : ValidateProvider(providerOverride);
+        var targetModel = ReadConfiguredModel(configPath);
 
         var sessionFiles = EnumerateSessionFiles(resolvedHome).ToArray();
         var stateDatabases = Directory
@@ -55,7 +57,7 @@ internal sealed partial class MigrationService
             SessionMetadata metadata;
             try
             {
-                metadata = ReadSessionMetadata(sessionFile);
+                metadata = ReadSessionMetadata(sessionFile, targetModel);
             }
             catch (IOException exception) when (IsFileInUse(exception))
             {
@@ -74,7 +76,8 @@ internal sealed partial class MigrationService
             {
                 filesWithoutMetadata++;
             }
-            else if (!string.Equals(metadata.Provider, targetProvider, StringComparison.Ordinal))
+            else if (!string.Equals(metadata.Provider, targetProvider, StringComparison.Ordinal) ||
+                     metadata.ModelNeedsChange)
             {
                 filesNeedingChange++;
             }
@@ -89,6 +92,7 @@ internal sealed partial class MigrationService
         return new MigrationAnalysis(
             resolvedHome,
             targetProvider,
+            targetModel,
             sessionFiles,
             lockedSessionFiles,
             stateDatabases,
@@ -126,7 +130,10 @@ internal sealed partial class MigrationService
             SessionUpdateResult update;
             try
             {
-                update = UpdateSessionFile(file, analysis.TargetProvider);
+                update = UpdateSessionFile(
+                    file,
+                    analysis.TargetProvider,
+                    analysis.TargetModel);
             }
             catch (IOException exception) when (IsFileInUse(exception))
             {
@@ -185,7 +192,7 @@ internal sealed partial class MigrationService
             return DefaultProvider;
         }
 
-        var match = ModelProviderRegex().Match(File.ReadAllText(configPath));
+        var match = ModelProviderRegex().Match(ReadRootConfig(configPath));
         if (!match.Success)
         {
             return DefaultProvider;
@@ -194,12 +201,44 @@ internal sealed partial class MigrationService
         return ValidateProvider(match.Groups["value"].Value);
     }
 
+    private static string? ReadConfiguredModel(string configPath)
+    {
+        if (!File.Exists(configPath))
+        {
+            return null;
+        }
+
+        var match = ModelRegex().Match(ReadRootConfig(configPath));
+        return match.Success
+            ? ValidateModel(match.Groups["value"].Value)
+            : null;
+    }
+
+    private static string ReadRootConfig(string configPath)
+    {
+        return string.Join(
+            '\n',
+            File.ReadLines(configPath)
+                .TakeWhile(line => !line.TrimStart().StartsWith("[", StringComparison.Ordinal)));
+    }
+
     private static string ValidateProvider(string provider)
     {
         var value = provider.Trim();
         if (value.Length == 0 || value.IndexOfAny(['\r', '\n', '\0']) >= 0)
         {
             throw new ArgumentException("Provider 为空或包含非法控制字符。");
+        }
+
+        return value;
+    }
+
+    private static string ValidateModel(string model)
+    {
+        var value = model.Trim();
+        if (value.Length == 0 || value.IndexOfAny(['\r', '\n', '\0']) >= 0)
+        {
+            throw new ArgumentException("全局默认模型为空或包含非法控制字符。");
         }
 
         return value;
@@ -225,7 +264,7 @@ internal sealed partial class MigrationService
         }
     }
 
-    private static SessionMetadata ReadSessionMetadata(string path)
+    private static SessionMetadata ReadSessionMetadata(string path, string? targetModel)
     {
         using var stream = new FileStream(
             path,
@@ -237,61 +276,89 @@ internal sealed partial class MigrationService
             Encoding.UTF8,
             detectEncodingFromByteOrderMarks: true);
 
-        for (var lineNumber = 0; lineNumber < 50; lineNumber++)
+        var hasMetadata = false;
+        string? provider = null;
+        var modelNeedsChange = false;
+
+        while (reader.ReadLine() is { } line)
         {
-            var line = reader.ReadLine();
-            if (line is null)
+            var record = ReadSessionRecord(line);
+            if (!hasMetadata && record.Type == "session_meta")
+            {
+                hasMetadata = true;
+                provider = record.Provider;
+            }
+
+            if (targetModel is not null &&
+                record.Type == "turn_context" &&
+                !string.Equals(record.Model, targetModel, StringComparison.Ordinal))
+            {
+                modelNeedsChange = true;
+            }
+
+            if (hasMetadata && (targetModel is null || modelNeedsChange))
             {
                 break;
             }
-
-            if (TryReadSessionMetadata(line, out var provider))
-            {
-                return new SessionMetadata(true, provider);
-            }
         }
 
-        return new SessionMetadata(false, null);
+        return new SessionMetadata(hasMetadata, provider, modelNeedsChange);
     }
 
-    private static bool TryReadSessionMetadata(string line, out string? provider)
+    private static SessionRecord ReadSessionRecord(string line)
     {
-        provider = null;
         try
         {
             using var document = JsonDocument.Parse(line);
             var root = document.RootElement;
-            if (!root.TryGetProperty("type", out var type) ||
-                !string.Equals(type.GetString(), "session_meta", StringComparison.Ordinal) ||
+            if (!root.TryGetProperty("type", out var typeElement) ||
+                typeElement.ValueKind != JsonValueKind.String ||
                 !root.TryGetProperty("payload", out var payload) ||
                 payload.ValueKind != JsonValueKind.Object)
             {
-                return false;
+                return default;
             }
 
-            if (payload.TryGetProperty("model_provider", out var modelProvider) &&
-                modelProvider.ValueKind == JsonValueKind.String)
+            var type = typeElement.GetString();
+            if (string.Equals(type, "session_meta", StringComparison.Ordinal))
             {
-                provider = modelProvider.GetString();
+                var provider = payload.TryGetProperty("model_provider", out var modelProvider) &&
+                               modelProvider.ValueKind == JsonValueKind.String
+                    ? modelProvider.GetString()
+                    : null;
+                return new SessionRecord(type, provider, null);
             }
 
-            return true;
+            if (string.Equals(type, "turn_context", StringComparison.Ordinal))
+            {
+                var model = payload.TryGetProperty("model", out var modelElement) &&
+                            modelElement.ValueKind == JsonValueKind.String
+                    ? modelElement.GetString()
+                    : null;
+                return new SessionRecord(type, null, model);
+            }
+
+            return default;
         }
         catch (JsonException)
         {
-            return false;
+            return default;
         }
     }
 
-    private static SessionUpdateResult UpdateSessionFile(string path, string targetProvider)
+    private static SessionUpdateResult UpdateSessionFile(
+        string path,
+        string targetProvider,
+        string? targetModel)
     {
-        var metadata = ReadSessionMetadata(path);
+        var metadata = ReadSessionMetadata(path, targetModel);
         if (!metadata.HasMetadata)
         {
             return new SessionUpdateResult(false, false);
         }
 
-        if (string.Equals(metadata.Provider, targetProvider, StringComparison.Ordinal))
+        if (string.Equals(metadata.Provider, targetProvider, StringComparison.Ordinal) &&
+            !metadata.ModelNeedsChange)
         {
             return new SessionUpdateResult(false, true);
         }
@@ -313,11 +380,12 @@ internal sealed partial class MigrationService
                 string? line;
                 while ((line = reader.ReadLine()) is not null)
                 {
-                    if (!updated)
-                    {
-                        line = UpdateMetadataLine(line, targetProvider, out var lineUpdated);
-                        updated = lineUpdated;
-                    }
+                    line = UpdateSessionLine(
+                        line,
+                        targetProvider,
+                        targetModel,
+                        out var lineUpdated);
+                    updated |= lineUpdated;
 
                     writer.WriteLine(line);
                 }
@@ -352,23 +420,41 @@ internal sealed partial class MigrationService
         }
     }
 
-    private static string UpdateMetadataLine(
+    private static string UpdateSessionLine(
         string line,
         string targetProvider,
+        string? targetModel,
         out bool updated)
     {
         updated = false;
         try
         {
             if (JsonNode.Parse(line) is not JsonObject root ||
-                root["type"]?.GetValue<string>() != "session_meta" ||
                 root["payload"] is not JsonObject payload)
             {
                 return line;
             }
 
-            payload["model_provider"] = targetProvider;
-            updated = true;
+            var type = root["type"]?.GetValue<string>();
+            if (type == "session_meta" &&
+                ReadString(payload, "model_provider") != targetProvider)
+            {
+                payload["model_provider"] = targetProvider;
+                updated = true;
+            }
+            else if (type == "turn_context" &&
+                     targetModel is not null &&
+                     ReadString(payload, "model") != targetModel)
+            {
+                payload["model"] = targetModel;
+                updated = true;
+            }
+
+            if (!updated)
+            {
+                return line;
+            }
+
             return root.ToJsonString(CompactJsonOptions);
         }
         catch (JsonException)
@@ -379,6 +465,14 @@ internal sealed partial class MigrationService
         {
             return line;
         }
+    }
+
+    private static string? ReadString(JsonObject value, string propertyName)
+    {
+        return value[propertyName] is JsonValue property &&
+               property.TryGetValue<string>(out var result)
+            ? result
+            : null;
     }
 
     private static int CountSqliteRowsNeedingChange(
@@ -556,6 +650,7 @@ internal sealed partial class MigrationService
             DateTimeOffset.Now,
             analysis.CodexHome,
             analysis.TargetProvider,
+            analysis.TargetModel,
             analysis.SessionFiles.Count,
             sessionFilesChanged,
             sessionFilesWithoutMetadata,
@@ -576,6 +671,13 @@ internal sealed partial class MigrationService
     [GeneratedRegex("(?m)^\\s*model_provider\\s*=\\s*[\"'](?<value>[^\"']+)[\"']\\s*(?:#.*)?$")]
     private static partial Regex ModelProviderRegex();
 
-    private sealed record SessionMetadata(bool HasMetadata, string? Provider);
+    [GeneratedRegex("(?m)^\\s*model\\s*=\\s*[\"'](?<value>[^\"']+)[\"']\\s*(?:#.*)?$")]
+    private static partial Regex ModelRegex();
+
+    private readonly record struct SessionRecord(string? Type, string? Provider, string? Model);
+    private sealed record SessionMetadata(
+        bool HasMetadata,
+        string? Provider,
+        bool ModelNeedsChange);
     private sealed record SessionUpdateResult(bool Changed, bool HasMetadata);
 }

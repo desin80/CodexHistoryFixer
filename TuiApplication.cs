@@ -77,14 +77,14 @@ internal static class TuiApplication
 
         if (!HasPendingChanges(analysis))
         {
-            AnsiConsole.MarkupLine("\n[green]所有会话已经使用当前 Provider，无需迁移。[/]");
+            PrintNoPendingChanges(analysis);
             return FinishWithPause(0, true);
         }
 
         AnsiConsole.MarkupLine(
             "\n[yellow]活动会话占用的 JSONL 会自动跳过；其余会话与索引将继续迁移。[/]");
         var confirmed = AnsiConsole.Confirm(
-            $"将全部会话统一为 [cyan]{Markup.Escape(analysis.TargetProvider)}[/]，并先创建完整备份。继续？",
+            $"将全部会话统一为 {FormatTarget(analysis)}，并先创建完整备份。继续？",
             false);
         if (!confirmed)
         {
@@ -105,13 +105,13 @@ internal static class TuiApplication
 
         if (!HasPendingChanges(analysis))
         {
-            AnsiConsole.MarkupLine("\n[green]所有会话已经使用当前 Provider，无需迁移。[/]");
+            PrintNoPendingChanges(analysis);
             return 0;
         }
 
         if (!options.AssumeYes &&
             !AnsiConsole.Confirm(
-                $"将全部会话统一为 [cyan]{Markup.Escape(analysis.TargetProvider)}[/]。继续？",
+                $"将全部会话统一为 {FormatTarget(analysis)}。继续？",
                 false))
         {
             AnsiConsole.MarkupLine("[grey]已取消，未修改任何数据。[/]");
@@ -202,6 +202,11 @@ internal static class TuiApplication
         summary.AddRow(
             "[grey70]目标 Provider[/]",
             $"[cyan]{Markup.Escape(analysis.TargetProvider)}[/]");
+        summary.AddRow(
+            "[grey70]目标模型[/]",
+            analysis.TargetModel is null
+                ? "[grey]配置未指定，保留原值[/]"
+                : $"[cyan]{Markup.Escape(analysis.TargetModel)}[/]");
         summary.AddRow("[grey70]会话文件[/]", analysis.SessionFiles.Count.ToString("N0"));
         summary.AddRow(
             "[grey70]占用中[/]",
@@ -278,6 +283,22 @@ internal static class TuiApplication
     private static string FormatPending(int count)
     {
         return count == 0 ? "[green]0[/]" : $"[yellow]{count:N0}[/]";
+    }
+
+    private static string FormatTarget(MigrationAnalysis analysis)
+    {
+        var provider = $"Provider [cyan]{Markup.Escape(analysis.TargetProvider)}[/]";
+        return analysis.TargetModel is null
+            ? $"{provider}（模型保留原值）"
+            : $"{provider}、模型 [cyan]{Markup.Escape(analysis.TargetModel)}[/]";
+    }
+
+    private static void PrintNoPendingChanges(MigrationAnalysis analysis)
+    {
+        var scope = analysis.TargetModel is null
+            ? "当前 Provider"
+            : "当前 Provider 和默认模型";
+        AnsiConsole.MarkupLine($"\n[green]所有会话已经使用{scope}，无需迁移。[/]");
     }
 
     private static int FinishWithPause(int exitCode, bool pause)
